@@ -19,7 +19,6 @@
 
 #include <BaseClientRpc.h>
 #include <BaseCyclicClientRpc.h>
-#include <ActuatorConfigClientRpc.h>
 #include <SessionClientRpc.h>
 #include <SessionManager.h>
 
@@ -43,7 +42,7 @@ namespace k_api = Kinova::Api;
 #define PORT 10000
 #define PORT_REAL_TIME 10001
 
-#define DURATION 30             // Network timeout (seconds)
+#define DURATION 5             // Network timeout (seconds)
 
 float velocity = 20.0f;         // Default velocity of the actuator (degrees per seconds)
 float time_duration = DURATION; // Duration of the example (seconds)
@@ -143,7 +142,7 @@ void example_move_to_home_position(k_api::Base::BaseClient* base)
     }
 }
 
-bool example_actuator_low_level_velocity_control(k_api::Base::BaseClient* base, k_api::BaseCyclic::BaseCyclicClient* base_cyclic, k_api::ActuatorConfig::ActuatorConfigClient* actuator_config)
+bool example_actuator_low_level_velocity_control(k_api::Base::BaseClient* base, k_api::BaseCyclic::BaseCyclicClient* base_cyclic)
 {
     bool return_status = true;
 
@@ -180,32 +179,15 @@ bool example_actuator_low_level_velocity_control(k_api::Base::BaseClient* base, 
             base_command.add_actuators()->set_position(base_feedback.actuators(i).position());
         }
 
-        // Define the callback function used in Refresh_callback.
-        // Store the latest feedback so the position command can be kept synced to the
-        // current reading on the next loop iteration (to avoid a following error).
-        auto lambda_fct_callback = [&base_feedback](const Kinova::Api::Error &err, const k_api::BaseCyclic::Feedback data)
+        // Define the callback function used in Refresh_callback
+        auto lambda_fct_callback = [](const Kinova::Api::Error &err, const k_api::BaseCyclic::Feedback data)
         {
-            base_feedback = data;
-
             // We are printing the data of the moving actuator just for the example purpose,
             // avoid this in a real-time loop
-            //std::string serialized_data;
-            //google::protobuf::util::MessageToJsonString(data.actuators(data.actuators_size() - 1), &serialized_data);
-            //std::cout << serialized_data << std::endl << std::endl;
+            std::string serialized_data;
+            google::protobuf::util::MessageToJsonString(data.actuators(data.actuators_size() - 1), &serialized_data);
+            std::cout << serialized_data << std::endl << std::endl;
         };
-
-        // Move only the last actuator to prevent collision. Device IDs are 1-based,
-        // so the last actuator's device id is equal to the actuator count.
-        int last_actuator_device_id = actuator_count;
-
-        // Set the last actuator in velocity control mode so it follows the velocity
-        // command instead of the position command
-        auto control_mode_message = k_api::ActuatorConfig::ControlModeInformation();
-        control_mode_message.set_control_mode(k_api::ActuatorConfig::ControlMode::VELOCITY);
-        actuator_config->SetControlMode(control_mode_message, last_actuator_device_id);
-
-        std::cout << "Sending velocity command of " << velocity << " deg/s to actuator "
-                  << last_actuator_device_id << " for " << time_duration << " seconds" << std::endl;
 
         // Real-time loop
         while(timer_count < (time_duration * 1000))
@@ -218,31 +200,24 @@ bool example_actuator_low_level_velocity_control(k_api::Base::BaseClient* base, 
                     // Move only the last actuator to prevent collision
         		    if(i == actuator_count - 1)
         		    {
-                        // In velocity control mode the actuator tracks the velocity command (deg/s).
-                        // The position field is kept synced to the measured position so that the
-                        // following error does not trigger if control mode switches back to position.
-                        base_command.mutable_actuators(i)->set_position(base_feedback.actuators(i).position());
-                        base_command.mutable_actuators(i)->set_velocity(velocity);
+                        commands[i] += (0.001f * velocity);
+                    	base_command.mutable_actuators(i)->set_position(fmod(commands[i], 360.0f));
         		    }
                 }
 
                 try
                 {
-                    base_feedback = base_cyclic->Refresh(base_command, 0);
+                    base_cyclic->Refresh_callback(base_command, lambda_fct_callback, 0);
                 }
                 catch(...)
                 {
                     timeout++;
                 }
-
+                
                 timer_count++;
                 last = GetTickUs();
             }
         }
-
-        // Set the last actuator back in position control mode
-        control_mode_message.set_control_mode(k_api::ActuatorConfig::ControlMode::POSITION);
-        actuator_config->SetControlMode(control_mode_message, last_actuator_device_id);
     }
     catch (k_api::KDetailedException& ex)
     {
@@ -298,10 +273,9 @@ int main(int argc, char **argv)
     // Create services
     auto base = new k_api::Base::BaseClient(router);
     auto base_cyclic = new k_api::BaseCyclic::BaseCyclicClient(router_real_time);
-    auto actuator_config = new k_api::ActuatorConfig::ActuatorConfigClient(router);
 
     // Example core
-    auto isOk = example_actuator_low_level_velocity_control(base, base_cyclic, actuator_config);
+    auto isOk = example_actuator_low_level_velocity_control(base, base_cyclic);
     if (!isOk)
     {
         std::cout << "There has been an unexpected error in example_cyclic_armbase() function." << std::endl;
@@ -320,7 +294,6 @@ int main(int argc, char **argv)
     // Destroy the API
     delete base;
     delete base_cyclic;
-    delete actuator_config;
     delete session_manager;
     delete session_manager_real_time;
     delete router;
